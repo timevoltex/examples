@@ -40,29 +40,35 @@ import android.hardware.camera2.TotalCaptureResult
 import android.media.Image
 import android.media.ImageReader
 import android.media.ImageReader.OnImageAvailableListener
-import android.os.Bundle
-import android.os.Handler
-import android.os.HandlerThread
-import android.os.Process
+import android.os.*
 import androidx.fragment.app.DialogFragment
 import androidx.fragment.app.Fragment
 import android.util.Log
 import android.util.Size
 import android.util.SparseIntArray
-import android.view.LayoutInflater
-import android.view.Surface
-import android.view.SurfaceHolder
-import android.view.SurfaceView
-import android.view.View
-import android.view.ViewGroup
+import android.util.TypedValue
+import android.view.*
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Toast
+import androidx.annotation.MainThread
+import androidx.annotation.RequiresApi
 import androidx.core.app.ActivityCompat
+import kotlinx.android.synthetic.main.tfe_pn_activity_posenet.*
+import kotlinx.android.synthetic.main.tfe_pn_activity_posenet.view.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.launch
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 import org.tensorflow.lite.examples.posenet.lib.BodyPart
 import org.tensorflow.lite.examples.posenet.lib.Person
 import org.tensorflow.lite.examples.posenet.lib.Posenet
+import kotlin.math.pow
+import kotlin.math.sqrt
 
 class PosenetActivity :
   Fragment(),
@@ -83,7 +89,7 @@ class PosenetActivity :
     Pair(BodyPart.RIGHT_HIP, BodyPart.RIGHT_KNEE),
     Pair(BodyPart.RIGHT_KNEE, BodyPart.RIGHT_ANKLE)
   )
-
+  private val betweenEyes = Pair(BodyPart.LEFT_EYE, BodyPart.RIGHT_EYE)
   /** Threshold for confidence score. */
   private val minConfidence = 0.5
 
@@ -157,6 +163,12 @@ class PosenetActivity :
   /** Abstract interface to someone holding a display surface.    */
   private var surfaceHolder: SurfaceHolder? = null
 
+  private var eyeLength: Double? = null
+
+  private lateinit var currentView: WebView
+
+  private var initSize: Float? = null
+
   /** [CameraDevice.StateCallback] is called when [CameraDevice] changes its state.   */
   private val stateCallback = object : CameraDevice.StateCallback() {
 
@@ -211,12 +223,29 @@ class PosenetActivity :
     inflater: LayoutInflater,
     container: ViewGroup?,
     savedInstanceState: Bundle?
-  ): View? = inflater.inflate(R.layout.tfe_pn_activity_posenet, container, false)
+  ): View? {
 
+    return inflater.inflate(R.layout.tfe_pn_activity_posenet, container, false)
+  }
+  @RequiresApi(Build.VERSION_CODES.O)
   override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
     surfaceView = view.findViewById(R.id.surfaceView)
+    currentView = view.webView
+    currentView.settings.javaScriptEnabled = true
+    currentView.loadUrl("https://www.naver.com")
+    currentView.webChromeClient = WebChromeClient()
+    currentView.webViewClient = WebViewClientClass();
+//    initSize = temp_text.textSize - 30
     surfaceHolder = surfaceView!!.holder
   }
+  inner class WebViewClientClass: WebViewClient() {
+    override fun shouldOverrideUrlLoading(view: WebView?, url: String): Boolean {
+      view?.loadUrl(url)
+      return true
+    }
+  }
+
+
 
   override fun onResume() {
     super.onResume()
@@ -239,6 +268,22 @@ class PosenetActivity :
     super.onDestroy()
     posenet.close()
   }
+
+
+    private fun resizeText(){
+
+      GlobalScope.launch(Dispatchers.Main){
+      if (eyeLength !== null) {
+        if (eyeLength!! > 100 ) {
+          currentView.settings.textZoom = 100 - (eyeLength!!.toInt() - 100)
+        } else {
+          currentView.settings.textZoom = 100
+        }
+      }
+
+      println("initSize = ${currentView.settings.textZoom}")
+  }
+    }
 
   private fun requestCameraPermission() {
     if (shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)) {
@@ -280,7 +325,7 @@ class PosenetActivity :
         // We don't use a front facing camera in this sample.
         val cameraDirection = characteristics.get(CameraCharacteristics.LENS_FACING)
         if (cameraDirection != null &&
-          cameraDirection == CameraCharacteristics.LENS_FACING_FRONT
+          cameraDirection == CameraCharacteristics.LENS_FACING_BACK
         ) {
           continue
         }
@@ -324,7 +369,7 @@ class PosenetActivity :
    * Opens the camera specified by [PosenetActivity.cameraId].
    */
   private fun openCamera() {
-    val permissionCamera = getContext()!!.checkPermission(
+    val permissionCamera = context!!.checkPermission(
       Manifest.permission.CAMERA, Process.myPid(), Process.myUid()
     )
     if (permissionCamera != PackageManager.PERMISSION_GRANTED) {
@@ -435,7 +480,7 @@ class PosenetActivity :
 
       // Create rotated version for portrait display
       val rotateMatrix = Matrix()
-      rotateMatrix.postRotate(90.0f)
+      rotateMatrix.postRotate(270.0f)
 
       val rotatedBitmap = Bitmap.createBitmap(
         imageBitmap, 0, 0, previewWidth, previewHeight,
@@ -501,6 +546,7 @@ class PosenetActivity :
     val right: Int
     val top: Int
     val bottom: Int
+
     if (canvas.height > canvas.width) {
       screenWidth = canvas.width
       screenHeight = canvas.width
@@ -527,50 +573,22 @@ class PosenetActivity :
     val heightRatio = screenHeight.toFloat() / MODEL_HEIGHT
 
     // Draw key points over the image.
-    for (keyPoint in person.keyPoints) {
-      if (keyPoint.score > minConfidence) {
-        val position = keyPoint.position
-        val adjustedX: Float = position.x.toFloat() * widthRatio + left
-        val adjustedY: Float = position.y.toFloat() * heightRatio + top
-        canvas.drawCircle(adjustedX, adjustedY, circleRadius, paint)
-      }
+
+    if((person.keyPoints[betweenEyes.first.ordinal].score > minConfidence) and (person.keyPoints[betweenEyes.second.ordinal].score > minConfidence)){
+      val lEPosition = person.keyPoints[betweenEyes.first.ordinal].position;
+      val rEPosition = person.keyPoints[betweenEyes.second.ordinal].position;
+      val adjustXLE = lEPosition.x.toFloat() * widthRatio + left
+      val adjustYLE = lEPosition.y.toFloat() * heightRatio + top
+      val adjustXRE = rEPosition.x.toFloat() * widthRatio + left
+      val adjustYRE = rEPosition.y.toFloat() * heightRatio + top
+      canvas.drawCircle(adjustXLE, adjustYLE, circleRadius, paint)
+      canvas.drawCircle(adjustXRE, adjustYRE, circleRadius, paint)
+      eyeLength = sqrt(abs((adjustXLE - adjustXRE).pow(2).toDouble()) + (adjustYLE - adjustYRE).pow(2).toDouble())
+
+      resizeText()
+
     }
 
-    for (line in bodyJoints) {
-      if (
-        (person.keyPoints[line.first.ordinal].score > minConfidence) and
-        (person.keyPoints[line.second.ordinal].score > minConfidence)
-      ) {
-        canvas.drawLine(
-          person.keyPoints[line.first.ordinal].position.x.toFloat() * widthRatio + left,
-          person.keyPoints[line.first.ordinal].position.y.toFloat() * heightRatio + top,
-          person.keyPoints[line.second.ordinal].position.x.toFloat() * widthRatio + left,
-          person.keyPoints[line.second.ordinal].position.y.toFloat() * heightRatio + top,
-          paint
-        )
-      }
-    }
-
-    canvas.drawText(
-      "Score: %.2f".format(person.score),
-      (15.0f * widthRatio),
-      (30.0f * heightRatio + bottom),
-      paint
-    )
-    canvas.drawText(
-      "Device: %s".format(posenet.device),
-      (15.0f * widthRatio),
-      (50.0f * heightRatio + bottom),
-      paint
-    )
-    canvas.drawText(
-      "Time: %.2f ms".format(posenet.lastInferenceTimeNanos * 1.0f / 1_000_000),
-      (15.0f * widthRatio),
-      (70.0f * heightRatio + bottom),
-      paint
-    )
-
-    // Draw!
     surfaceHolder!!.unlockCanvasAndPost(canvas)
   }
 
