@@ -18,14 +18,37 @@ package org.tensorflow.lite.examples.posenet
 
 import android.os.Bundle
 import androidx.appcompat.app.AppCompatActivity
+import android.Manifest
+import android.content.Context
+import android.content.pm.PackageManager
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import kotlin.system.exitProcess
 
 class CameraActivity : AppCompatActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     setContentView(R.layout.tfe_pn_activity_camera)
+    if(checkPermission()){
     savedInstanceState ?: supportFragmentManager.beginTransaction()
       .replace(R.id.container, PosenetActivity())
       .commit()
+    }else{
+      ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), 1)
+
+    }
   }
+
+  override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+    if(requestCode == 1){
+      supportFragmentManager.beginTransaction().replace(R.id.container, PosenetActivity()).commit()
+    }
+    else{
+      exitProcess(0)
+    }
+  }
+ private fun checkPermission(): Boolean{
+    return (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
+ }
 }
