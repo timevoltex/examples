@@ -87,9 +87,8 @@ class TextClassifierTest(tf.test.TestCase):
 
   @test_util.test_in_tf_2
   def test_mobilebert_model(self):
-    model_spec = ms.mobilebert_classifier_spec
-    model_spec.seq_len = 2
-    model_spec.trainable = False
+    model_spec = ms.mobilebert_classifier_spec(
+        seq_len=2, trainable=False, default_batch_size=1)
     all_data = text_dataloader.TextClassifierDataLoader.from_folder(
         self.tiny_text_dir, model_spec=model_spec)
     # Splits data, 50% data for training, 50% for testing
@@ -99,11 +98,20 @@ class TextClassifierTest(tf.test.TestCase):
         self.train_data,
         model_spec=model_spec,
         epochs=1,
-        batch_size=1,
         shuffle=True)
     self._test_accuracy(model, 0.0)
     self._test_export_to_tflite(model, threshold=0.0, atol=1e-2)
     self._test_export_to_tflite_quant(model)
+
+  @test_util.test_in_tf_2
+  def test_mobilebert_model_without_training_for_tfjs(self):
+    model_spec = ms.mobilebert_classifier_spec(
+        seq_len=2, trainable=False, default_batch_size=1)
+    all_data = text_dataloader.TextClassifierDataLoader.from_folder(
+        self.text_dir, model_spec=model_spec)
+    self.train_data, self.test_data = all_data.split(0.5)
+    with self.assertRaises(Exception):  # Raise an error when reloading model.
+      self._test_model_without_training(model_spec)
 
   @test_util.test_in_tf_2
   def test_average_wordvec_model(self):
@@ -136,6 +144,7 @@ class TextClassifierTest(tf.test.TestCase):
         self.train_data, model_spec=model_spec, do_train=False)
     self._test_accuracy(model, threshold=0.0)
     self._test_export_to_tflite(model, threshold=0.0)
+    self._test_export_to_tfjs(model)
 
   def _test_accuracy(self, model, threshold=1.0):
     _, accuracy = model.evaluate(self.test_data)
@@ -143,7 +152,7 @@ class TextClassifierTest(tf.test.TestCase):
 
   def _test_predict_top_k(self, model):
     topk = model.predict_top_k(self.test_data, batch_size=1)
-    for i in range(self.test_data.size):
+    for i in range(len(self.test_data)):
       predict_label, predict_prob = topk[i][0][0], topk[i][0][1]
       self.assertIn(predict_label, model.index_to_label)
       self.assertGreater(predict_prob, 0.5)
@@ -230,6 +239,13 @@ class TextClassifierTest(tf.test.TestCase):
     self.assertTrue(os.path.isdir(save_model_output_path))
     self.assertNotEmpty(os.listdir(save_model_output_path))
 
+  def _test_export_to_tfjs(self, model):
+    output_path = os.path.join(self.get_temp_dir(), 'tfjs')
+    model.export(self.get_temp_dir(), export_format=ExportFormat.TFJS)
+
+    self.assertTrue(os.path.isdir(output_path))
+    self.assertNotEmpty(os.listdir(output_path))
+
   def _test_export_to_tflite_quant(self, model):
     tflite_filename = 'model_quant.tflite'
     tflite_output_file = os.path.join(self.get_temp_dir(), tflite_filename)
@@ -246,5 +262,7 @@ class TextClassifierTest(tf.test.TestCase):
 
 
 if __name__ == '__main__':
+  # Load compressed models from tensorflow_hub
+  os.environ['TFHUB_MODEL_LOAD_FORMAT'] = 'COMPRESSED'
   compat.setup_tf_behavior(tf_version=2)
   tf.test.main()

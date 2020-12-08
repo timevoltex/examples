@@ -23,6 +23,10 @@ import tempfile
 import numpy as np
 import tensorflow as tf
 from tensorflow_examples.lite.model_maker.core import compat
+from tensorflowjs.converters import converter as tfjs_converter
+
+
+DEFAULT_SCALE, DEFAULT_ZERO_POINT = 0, 0
 
 
 def set_batch_size(model, batch_size):
@@ -33,6 +37,7 @@ def set_batch_size(model, batch_size):
 
 
 def _create_temp_dir(convert_from_saved_model):
+  """Creates temp dir, if True is given."""
   if convert_from_saved_model:
     return tempfile.TemporaryDirectory()
   else:
@@ -51,18 +56,17 @@ class DummyContextManager(object):
 def export_tflite(model,
                   tflite_filepath,
                   quantization_config=None,
-                  gen_dataset_fn=None,
-                  convert_from_saved_model_tf2=False):
+                  convert_from_saved_model_tf2=False,
+                  preprocess=None):
   """Converts the retrained model to tflite format and saves it.
 
   Args:
     model: model to be converted to tflite.
     tflite_filepath: File path to save tflite model.
     quantization_config: Configuration for post-training quantization.
-    gen_dataset_fn: Function to generate tf.data.dataset from
-      `representative_data`. Used only when `representative_data` in
-      `quantization_config` is setted.
     convert_from_saved_model_tf2: Convert to TFLite from saved_model in TF 2.x.
+    preprocess: A preprocess function to apply on the dataset.
+        # TODO(wangtz): Remove when preprocess is split off from CustomModel.
   """
   if tflite_filepath is None:
     raise ValueError(
@@ -85,7 +89,7 @@ def export_tflite(model,
 
     if quantization_config:
       converter = quantization_config.get_converter_with_quantization(
-          converter, gen_dataset_fn)
+          converter, preprocess)
 
     tflite_model = converter.convert()
 
@@ -158,12 +162,14 @@ class LiteRunner(object):
 
     Args:
       input_tensors: List / Dict of the input tensors of the TFLite model. The
-        order should be the same as the keras model if it's a list.
+        order should be the same as the keras model if it's a list. It also
+        accepts tensor directly if the model has only 1 input.
 
     Returns:
-      List of the output tensors of the TFLite model. The order should be the
-      same as the keras model.
+      List of the output tensors for multi-output models, otherwise just
+        the output tensor. The order should be the same as the keras model.
     """
+
     if not isinstance(input_tensors, list) and \
        not isinstance(input_tensors, tuple) and \
        not isinstance(input_tensors, dict):
@@ -172,9 +178,7 @@ class LiteRunner(object):
     interpreter = self.interpreter
     for i, input_detail in enumerate(self.input_details):
       input_tensor = _get_input_tensor(input_tensors, self.input_details, i)
-
-      default_scale, default_zero_point = 0, 0
-      if input_detail['quantization'] != (default_scale, default_zero_point):
+      if input_detail['quantization'] != (DEFAULT_SCALE, DEFAULT_ZERO_POINT):
         # Quantize the input
         scale, zero_point = input_detail['quantization']
         input_tensor = input_tensor / scale + zero_point
@@ -186,11 +190,43 @@ class LiteRunner(object):
     output_tensors = []
     for output_detail in self.output_details:
       output_tensor = interpreter.get_tensor(output_detail['index'])
-      if output_detail['quantization'] != (0, 0):
+      if output_detail['quantization'] != (DEFAULT_SCALE, DEFAULT_ZERO_POINT):
         # Dequantize the output
         scale, zero_point = output_detail['quantization']
         output_tensor = output_tensor.astype(np.float32)
         output_tensor = (output_tensor - zero_point) * scale
       output_tensors.append(output_tensor)
 
+    if len(output_tensors) == 1:
+      return output_tensors[0]
     return output_tensors
+
+
+def export_tfjs(keras_or_saved_model, output_dir, **kwargs):
+  """Exports saved model to tfjs.
+
+  https://www.tensorflow.org/js/guide/conversion?hl=en
+
+  Args:
+    keras_or_saved_model: Keras or saved model.
+    output_dir: Output TF.js model dir.
+    **kwargs: Other options.
+  """
+  # For Keras model, creates a saved model first in a temp dir. Otherwise,
+  # convert directly.
+  is_keras = isinstance(keras_or_saved_model, tf.keras.Model)
+  with _create_temp_dir(is_keras) as temp_dir_name:
+    if is_keras:
+      keras_or_saved_model.save(
+          temp_dir_name, include_optimizer=False, save_format='tf')
+      path = temp_dir_name
+    else:
+      path = keras_or_saved_model
+    tfjs_converter.dispatch_keras_saved_model_to_tensorflowjs_conversion(
+        path, output_dir, **kwargs)
+
+
+def load_tfjs_keras_model(model_path):
+  """Loads tfjs keras model from path."""
+  return tfjs_converter.keras_tfjs_loader.load_keras_model(
+      model_path, load_weights=True)

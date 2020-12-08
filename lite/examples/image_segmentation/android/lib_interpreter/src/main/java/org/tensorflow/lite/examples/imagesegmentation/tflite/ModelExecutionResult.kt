@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package org.tensorflow.lite.examples.imagesegmentation
+package org.tensorflow.lite.examples.imagesegmentation.tflite
 
 import android.graphics.Bitmap
 
@@ -23,5 +23,6 @@ data class ModelExecutionResult(
   val bitmapOriginal: Bitmap,
   val bitmapMaskOnly: Bitmap,
   val executionLog: String,
-  val itemsFound: Set<Int>
+  // A map between labels and colors of the items found.
+  val itemsFound: Map<String, Int>
 )

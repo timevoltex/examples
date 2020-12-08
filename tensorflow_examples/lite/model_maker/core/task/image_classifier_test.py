@@ -54,7 +54,7 @@ class ImageClassifierTest(tf.test.TestCase):
         self._gen, (tf.uint8, tf.int64), (tf.TensorShape(
             [self.IMAGE_SIZE, self.IMAGE_SIZE, 3]), tf.TensorShape([])))
     data = image_dataloader.ImageClassifierDataLoader(
-        ds, self.IMAGES_PER_CLASS * 3, 3, ['cyan', 'magenta', 'yellow'])
+        ds, self.IMAGES_PER_CLASS * 3, ['cyan', 'magenta', 'yellow'])
     return data
 
   def setUp(self):
@@ -67,7 +67,7 @@ class ImageClassifierTest(tf.test.TestCase):
   def test_mobilenetv2_model(self):
     model = image_classifier.create(
         self.train_data,
-        model_spec.mobilenet_v2_spec,
+        model_spec.mobilenet_v2_spec(),
         epochs=1,
         batch_size=1,
         shuffle=True)
@@ -78,17 +78,19 @@ class ImageClassifierTest(tf.test.TestCase):
     self._test_export_to_tflite_with_metadata(model)
     self._test_export_to_saved_model(model)
     self._test_export_labels(model)
+    self._test_export_to_tfjs(model)
 
   @test_util.test_in_tf_1
   def test_mobilenetv2_model_create_v1_incompatible(self):
     with self.assertRaisesRegex(ValueError, 'Incompatible versions'):
-      _ = image_classifier.create(self.train_data, model_spec.mobilenet_v2_spec)
+      _ = image_classifier.create(self.train_data,
+                                  model_spec.mobilenet_v2_spec())
 
   @test_util.test_in_tf_1and2
   def test_efficientnetlite0_model_with_model_maker_retraining_lib(self):
     model = image_classifier.create(
         self.train_data,
-        model_spec.efficientnet_lite0_spec,
+        model_spec.efficientnet_lite0_spec(),
         epochs=1,
         batch_size=1,
         shuffle=True,
@@ -100,7 +102,7 @@ class ImageClassifierTest(tf.test.TestCase):
   def test_efficientnetlite0_model(self):
     model = image_classifier.create(
         self.train_data,
-        model_spec.efficientnet_lite0_spec,
+        model_spec.efficientnet_lite0_spec(),
         epochs=1,
         batch_size=1,
         shuffle=True)
@@ -109,11 +111,12 @@ class ImageClassifierTest(tf.test.TestCase):
     self._test_export_to_tflite_quantized(model, self.train_data)
     self._test_export_to_tflite_with_metadata(
         model, expected_json_file='efficientnet_lite0_metadata.json')
+    self._test_export_to_tfjs(model)
 
   @test_util.test_in_tf_1and2
   def test_efficientnetlite0_model_without_training(self):
     model = image_classifier.create(
-        self.train_data, model_spec.efficientnet_lite0_spec, do_train=False)
+        self.train_data, model_spec.efficientnet_lite0_spec(), do_train=False)
     self._test_accuracy(model, threshold=0.0)
     self._test_export_to_tflite(model, threshold=0.0)
 
@@ -121,7 +124,7 @@ class ImageClassifierTest(tf.test.TestCase):
   def test_resnet_50_model(self):
     model = image_classifier.create(
         self.train_data,
-        model_spec.resnet_50_spec,
+        model_spec.resnet_50_spec(),
         epochs=1,
         batch_size=1,
         shuffle=True)
@@ -129,10 +132,11 @@ class ImageClassifierTest(tf.test.TestCase):
     self._test_export_to_tflite(model)
     self._test_export_to_tflite_quantized(model, self.train_data)
     self._test_export_to_tflite_with_metadata(model)
+    self._test_export_to_tfjs(model)
 
   def _test_predict_top_k(self, model, threshold=0.0):
     topk = model.predict_top_k(self.test_data, batch_size=4)
-    for i, (_, label) in enumerate(self.test_data.dataset):
+    for i, (_, label) in enumerate(self.test_data.gen_dataset().unbatch()):
       predict_label, predict_prob = topk[i][0][0], topk[i][0][1]
       self.assertEqual(model.index_to_label[label], predict_label)
       self.assertGreaterEqual(predict_prob, threshold)
@@ -216,7 +220,16 @@ class ImageClassifierTest(tf.test.TestCase):
     self.assertTrue(os.path.isdir(save_model_output_path))
     self.assertNotEqual(len(os.listdir(save_model_output_path)), 0)
 
+  def _test_export_to_tfjs(self, model):
+    output_path = os.path.join(self.get_temp_dir(), 'tfjs')
+    model.export(self.get_temp_dir(), export_format=ExportFormat.TFJS)
+
+    self.assertTrue(os.path.isdir(output_path))
+    self.assertNotEqual(len(os.listdir(output_path)), 0)
+
 
 if __name__ == '__main__':
+  # Load compressed models from tensorflow_hub
+  os.environ['TFHUB_MODEL_LOAD_FORMAT'] = 'COMPRESSED'
   compat.setup_tf_behavior(tf_version=2)
   tf.test.main()

@@ -21,6 +21,7 @@ from __future__ import print_function
 import numpy as np
 import tensorflow.compat.v2 as tf
 from tensorflow_examples.lite.model_maker.core.data_util import data_util
+from tensorflow_examples.lite.model_maker.core.export_format import ExportFormat
 from tensorflow_examples.lite.model_maker.core.task import custom_model
 from tensorflow_examples.lite.model_maker.core.task import model_util
 
@@ -28,14 +29,16 @@ from tensorflow_examples.lite.model_maker.core.task import model_util
 class ClassificationModel(custom_model.CustomModel):
   """"The abstract base class that represents a Tensorflow classification model."""
 
-  def __init__(self, model_spec, index_to_label, num_classes, shuffle,
-               train_whole_model):
+  DEFAULT_EXPORT_FORMAT = (ExportFormat.TFLITE, ExportFormat.LABEL)
+  ALLOWED_EXPORT_FORMAT = (ExportFormat.TFLITE, ExportFormat.LABEL,
+                           ExportFormat.SAVED_MODEL, ExportFormat.TFJS)
+
+  def __init__(self, model_spec, index_to_label, shuffle, train_whole_model):
     """Initialize a instance with data, deploy mode and other related parameters.
 
     Args:
       model_spec: Specification for the model.
       index_to_label: A list that map from index to label class name.
-      num_classes: Number of label classes.
       shuffle: Whether the data should be shuffled.
       train_whole_model: If true, the Hub module is trained together with the
         classification layer on top. Otherwise, only train the top
@@ -43,7 +46,7 @@ class ClassificationModel(custom_model.CustomModel):
     """
     super(ClassificationModel, self).__init__(model_spec, shuffle)
     self.index_to_label = index_to_label
-    self.num_classes = num_classes
+    self.num_classes = len(index_to_label)
     self.train_whole_model = train_whole_model
 
   def evaluate(self, data, batch_size=32):
@@ -56,8 +59,8 @@ class ClassificationModel(custom_model.CustomModel):
     Returns:
       The loss value and accuracy.
     """
-    ds = self._gen_dataset(data, batch_size, is_training=False)
-
+    ds = data.gen_dataset(
+        batch_size, is_training=False, preprocess=self.preprocess)
     return self.model.evaluate(ds)
 
   def predict_top_k(self, data, k=1, batch_size=32):
@@ -73,7 +76,8 @@ class ClassificationModel(custom_model.CustomModel):
     """
     if k < 0:
       raise ValueError('K should be equal or larger than 0.')
-    ds = self._gen_dataset(data, batch_size, is_training=False)
+    ds = data.gen_dataset(
+        batch_size, is_training=False, preprocess=self.preprocess)
 
     predicted_prob = self.model.predict(ds)
     topk_prob, topk_id = tf.math.top_k(predicted_prob, k=k)
@@ -103,8 +107,8 @@ class ClassificationModel(custom_model.CustomModel):
     Returns:
       The evaluation result of TFLite model - accuracy.
     """
-
-    ds = self._gen_dataset(data, batch_size=1, is_training=False)
+    ds = data.gen_dataset(
+        batch_size=1, is_training=False, preprocess=self.preprocess)
 
     predictions, labels = [], []
 
@@ -115,7 +119,7 @@ class ClassificationModel(custom_model.CustomModel):
                                        'Processing example: #%d\n%s', log_steps,
                                        i, feature)
 
-      probabilities = lite_runner.run(feature)[0]
+      probabilities = lite_runner.run(feature)
       predictions.append(np.argmax(probabilities))
 
       # Gets the ground-truth labels.

@@ -16,19 +16,26 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import inspect
 import os
 
 import tensorflow.compat.v2 as tf
 from tensorflow_examples.lite.model_maker.core import test_util
+from tensorflow_examples.lite.model_maker.core.export_format import ExportFormat
 from tensorflow_examples.lite.model_maker.core.task import custom_model
 
 
 class MockCustomModel(custom_model.CustomModel):
 
-  def train(self, train_data, validation_data=None, **kwargs):
-    pass
+  DEFAULT_EXPORT_FORMAT = (ExportFormat.TFLITE, ExportFormat.LABEL)
+  ALLOWED_EXPORT_FORMAT = (ExportFormat.TFLITE, ExportFormat.LABEL,
+                           ExportFormat.SAVED_MODEL, ExportFormat.TFJS)
 
-  def export(self, **kwargs):
+  def _export_labels(self, label_filepath):
+    with open(label_filepath, 'w') as f:
+      f.write('0\n')
+
+  def train(self, train_data, validation_data=None, **kwargs):
     pass
 
   def evaluate(self, data, **kwargs):
@@ -42,26 +49,62 @@ class CustomModelTest(tf.test.TestCase):
     self.model = MockCustomModel(
         model_spec=None,
         shuffle=False)
+    self.model.model = test_util.build_model(input_shape=[4], num_classes=2)
 
-  def test_gen_dataset(self):
-    input_dim = 8
-    data = test_util.get_dataloader(
-        data_size=2, input_shape=[input_dim], num_classes=2)
+  def _check_nonempty_dir(self, dirpath):
+    self.assertTrue(os.path.isdir(dirpath))
+    self.assertNotEmpty(os.listdir(dirpath))
 
-    ds = self.model._gen_dataset(data, batch_size=1, is_training=False)
-    expected = list(data.dataset.as_numpy_iterator())
-    for i, (feature, label) in enumerate(ds):
-      expected_feature = [expected[i][0]]
-      expected_label = [expected[i][1]]
-      self.assertTrue((feature.numpy() == expected_feature).any())
-      self.assertEqual(label.numpy(), expected_label)
+  def _check_nonempty_file(self, filepath):
+    self.assertTrue(os.path.isfile(filepath))
+    self.assertGreater(os.path.getsize(filepath), 0)
 
   def test_export_saved_model(self):
-    self.model.model = test_util.build_model(input_shape=[4], num_classes=2)
     saved_model_filepath = os.path.join(self.get_temp_dir(), 'saved_model/')
     self.model._export_saved_model(saved_model_filepath)
-    self.assertTrue(os.path.isdir(saved_model_filepath))
-    self.assertNotEqual(len(os.listdir(saved_model_filepath)), 0)
+    self._check_nonempty_dir(saved_model_filepath)
+
+  def test_export(self):
+    # Test whether there's naming conflict in different export functions.
+    params1 = inspect.signature(
+        self.model._export_saved_model).parameters.keys()
+    params2 = inspect.signature(self.model._export_tflite).parameters.keys()
+    self.assertTrue(params1.isdisjoint(params2))
+
+    export_path = os.path.join(self.get_temp_dir(), 'export0/')
+    self.model.export(export_path)
+    self._check_nonempty_file(os.path.join(export_path, 'model.tflite'))
+    self.assertFalse(os.path.exists(os.path.join(export_path, 'labels.txt')))
+
+    export_path = os.path.join(self.get_temp_dir(), 'export1/')
+    self.model.export(export_path, with_metadata=False)
+    self._check_nonempty_file(os.path.join(export_path, 'model.tflite'))
+    self._check_nonempty_file(os.path.join(export_path, 'labels.txt'))
+
+    export_path = os.path.join(self.get_temp_dir(), 'export2/')
+    self.model.export(
+        export_path,
+        export_format=[
+            ExportFormat.TFLITE, ExportFormat.LABEL, ExportFormat.SAVED_MODEL
+        ],
+        with_metadata=True)
+    self._check_nonempty_file(os.path.join(export_path, 'model.tflite'))
+    self._check_nonempty_file(os.path.join(export_path, 'labels.txt'))
+    self._check_nonempty_dir(os.path.join(export_path, 'saved_model'))
+
+    export_path = os.path.join(self.get_temp_dir(), 'export3/')
+    self.model.export(
+        export_path,
+        export_format=[ExportFormat.TFLITE, ExportFormat.SAVED_MODEL],
+        with_metadata=True,
+        include_optimizer=False)
+    self._check_nonempty_file(os.path.join(export_path, 'model.tflite'))
+    self._check_nonempty_dir(os.path.join(export_path, 'saved_model'))
+
+    export_path = os.path.join(self.get_temp_dir(), 'export4/')
+    self.model.export(export_path, export_format=[ExportFormat.TFJS])
+    expected_file = os.path.join(export_path, 'tfjs', 'model.json')
+    self._check_nonempty_file(expected_file)
 
 
 if __name__ == '__main__':

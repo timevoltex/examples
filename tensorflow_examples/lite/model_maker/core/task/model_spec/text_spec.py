@@ -11,14 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Model specification."""
+"""Text Model specification."""
 
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
 import collections
-import inspect
 import os
 import re
 import tempfile
@@ -28,6 +27,7 @@ from tensorflow_examples.lite.model_maker.core import compat
 from tensorflow_examples.lite.model_maker.core import file_util
 from tensorflow_examples.lite.model_maker.core.task import hub_loader
 from tensorflow_examples.lite.model_maker.core.task import model_util
+from tensorflow_examples.lite.model_maker.core.task.model_spec import util
 
 import tensorflow_hub as hub
 from tensorflow_hub import registry
@@ -48,107 +48,14 @@ except:
 # pylint: enable=g-import-not-at-top,bare-except
 
 
-def create_int_feature(values):
-  feature = tf.train.Feature(int64_list=tf.train.Int64List(value=list(values)))
-  return feature
-
-
-def _get_compat_tf_versions(compat_tf_versions=None):
-  """Gets compatible tf versions (default: [2]).
-
-  Args:
-    compat_tf_versions: int, int list or None, indicates compatible versions.
-
-  Returns:
-    A list of compatible tf versions.
-  """
-  if compat_tf_versions is None:
-    compat_tf_versions = [2]
-  if not isinstance(compat_tf_versions, list):
-    compat_tf_versions = [compat_tf_versions]
-  return compat_tf_versions
-
-
-def get_num_gpus(num_gpus):
-  try:
-    tot_num_gpus = len(tf.config.experimental.list_physical_devices('GPU'))
-  except (tf.errors.NotFoundError, tf.errors.InternalError):
-    tot_num_gpus = max(0, num_gpus)
-  if num_gpus > tot_num_gpus or num_gpus == -1:
-    num_gpus = tot_num_gpus
-  return num_gpus
-
-
-class ImageModelSpec(object):
-  """A specification of image model."""
-
-  mean_rgb = [0.0]
-  stddev_rgb = [255.0]
-
-  def __init__(self,
-               uri,
-               compat_tf_versions=None,
-               input_image_shape=None,
-               name=''):
-    self.uri = uri
-    self.compat_tf_versions = _get_compat_tf_versions(compat_tf_versions)
-    self.name = name
-
-    if input_image_shape is None:
-      input_image_shape = [224, 224]
-    self.input_image_shape = input_image_shape
-
-
-mobilenet_v2_spec = ImageModelSpec(
-    uri='https://tfhub.dev/google/tf2-preview/mobilenet_v2/feature_vector/4',
-    compat_tf_versions=2,
-    name='mobilenet_v2')
-
-resnet_50_spec = ImageModelSpec(
-    uri='https://tfhub.dev/google/imagenet/resnet_v2_50/feature_vector/4',
-    compat_tf_versions=2,
-    name='resnet_50')
-
-efficientnet_lite0_spec = ImageModelSpec(
-    uri='https://tfhub.dev/tensorflow/efficientnet/lite0/feature-vector/2',
-    compat_tf_versions=[1, 2],
-    name='efficientnet_lite0')
-
-efficientnet_lite1_spec = ImageModelSpec(
-    uri='https://tfhub.dev/tensorflow/efficientnet/lite1/feature-vector/2',
-    compat_tf_versions=[1, 2],
-    input_image_shape=[240, 240],
-    name='efficientnet_lite1')
-
-efficientnet_lite2_spec = ImageModelSpec(
-    uri='https://tfhub.dev/tensorflow/efficientnet/lite2/feature-vector/2',
-    compat_tf_versions=[1, 2],
-    input_image_shape=[260, 260],
-    name='efficientnet_lite2')
-
-efficientnet_lite3_spec = ImageModelSpec(
-    uri='https://tfhub.dev/tensorflow/efficientnet/lite3/feature-vector/2',
-    compat_tf_versions=[1, 2],
-    input_image_shape=[280, 280],
-    name='efficientnet_lite3')
-
-efficientnet_lite4_spec = ImageModelSpec(
-    uri='https://tfhub.dev/tensorflow/efficientnet/lite4/feature-vector/2',
-    compat_tf_versions=[1, 2],
-    input_image_shape=[300, 300],
-    name='efficientnet_lite4')
-
-
 class AverageWordVecModelSpec(object):
   """A specification of averaging word vector model."""
   PAD = '<PAD>'  # Index: 0
   START = '<START>'  # Index: 1
   UNKNOWN = '<UNKNOWN>'  # Index: 2
 
-  compat_tf_versions = _get_compat_tf_versions(2)
+  compat_tf_versions = compat.get_compat_tf_versions(2)
   need_gen_vocab = True
-  default_training_epochs = 2
-  default_batch_size = 32
   convert_from_saved_model_tf2 = False
 
   def __init__(self,
@@ -157,7 +64,10 @@ class AverageWordVecModelSpec(object):
                wordvec_dim=16,
                lowercase=True,
                dropout_rate=0.2,
-               name='AverageWordVec'):
+               name='AverageWordVec',
+               default_training_epochs=2,
+               default_batch_size=32,
+               model_dir=None):
     """Initialze a instance with preprocessing and model paramaters.
 
     Args:
@@ -168,6 +78,9 @@ class AverageWordVecModelSpec(object):
         preprocessing.
       dropout_rate: The rate for dropout.
       name: Name of the object.
+      default_training_epochs: Default training epochs for training.
+      default_batch_size: Default batch size for training.
+      model_dir: The location of the model checkpoint files.
     """
     self.num_words = num_words
     self.seq_len = seq_len
@@ -175,6 +88,12 @@ class AverageWordVecModelSpec(object):
     self.lowercase = lowercase
     self.dropout_rate = dropout_rate
     self.name = name
+    self.default_training_epochs = default_training_epochs
+    self.default_batch_size = default_batch_size
+
+    self.model_dir = model_dir
+    if self.model_dir is None:
+      self.model_dir = tempfile.mkdtemp()
 
   def get_name_to_features(self):
     """Gets the dictionary describing the features."""
@@ -200,8 +119,8 @@ class AverageWordVecModelSpec(object):
 
       input_ids = self.preprocess(example.text_a)
       label_id = label_to_id[example.label]
-      features['input_ids'] = create_int_feature(input_ids)
-      features['label_ids'] = create_int_feature([label_id])
+      features['input_ids'] = util.create_int_feature(input_ids)
+      features['label_ids'] = util.create_int_feature([label_id])
       tf_example = tf.train.Example(
           features=tf.train.Features(feature=features))
       writer.write(tf_example.SerializeToString())
@@ -228,7 +147,7 @@ class AverageWordVecModelSpec(object):
     return model
 
   def run_classifier(self, train_input_fn, validation_input_fn, epochs,
-                     steps_per_epoch, validation_steps, num_classes):
+                     steps_per_epoch, validation_steps, num_classes, **kwargs):
     """Creates classifier and runs the classifier training."""
     if epochs is None:
       epochs = self.default_training_epochs
@@ -246,7 +165,8 @@ class AverageWordVecModelSpec(object):
         epochs=epochs,
         steps_per_epoch=steps_per_epoch,
         validation_data=validation_ds,
-        validation_steps=validation_steps)
+        validation_steps=validation_steps,
+        **kwargs)
 
     return model
 
@@ -394,9 +314,8 @@ def create_classifier_model(bert_config,
 class BertModelSpec(object):
   """A specification of BERT model."""
 
-  compat_tf_versions = _get_compat_tf_versions(2)
+  compat_tf_versions = compat.get_compat_tf_versions(2)
   need_gen_vocab = False
-  default_batch_size = 32
 
   def __init__(
       self,
@@ -414,7 +333,8 @@ class BertModelSpec(object):
       is_tf2=True,
       convert_from_saved_model_tf2=False,
       name='Bert',
-      tflite_input_name=None):
+      tflite_input_name=None,
+      default_batch_size=32):
     """Initialze an instance with model paramaters.
 
     Args:
@@ -442,6 +362,7 @@ class BertModelSpec(object):
         2.x.
       name: The name of the object.
       tflite_input_name: Dict, input names for the TFLite model.
+      default_batch_size: Default batch size for training.
     """
     if compat.get_tf_behavior() not in self.compat_tf_versions:
       raise ValueError('Incompatible versions. Expect {}, but got {}.'.format(
@@ -456,7 +377,7 @@ class BertModelSpec(object):
     if self.model_dir is None:
       self.model_dir = tempfile.mkdtemp()
 
-    num_gpus = get_num_gpus(num_gpus)
+    num_gpus = util.get_num_gpus(num_gpus)
     self.strategy = distribute_utils.get_distribution_strategy(
         distribution_strategy=distribution_strategy,
         num_gpus=num_gpus,
@@ -482,6 +403,7 @@ class BertModelSpec(object):
           'segment_ids': 'input_type_ids'
       }
     self.tflite_input_name = tflite_input_name
+    self.default_batch_size = default_batch_size
 
   def reorder_input_details(self, tflite_input_details):
     """Reorders the tflite input details to map the order of keras model."""
@@ -567,7 +489,7 @@ class BertClassifierModelSpec(BertModelSpec):
     return bert_model
 
   def run_classifier(self, train_input_fn, validation_input_fn, epochs,
-                     steps_per_epoch, validation_steps, num_classes):
+                     steps_per_epoch, validation_steps, num_classes, **kwargs):
     """Creates classifier and runs the classifier training."""
 
     warmup_steps = int(epochs * steps_per_epoch * 0.1)
@@ -584,19 +506,13 @@ class BertClassifierModelSpec(BertModelSpec):
                                                 warmup_steps)
       bert_model = self.create_model(num_classes, optimizer)
 
-    summary_dir = os.path.join(self.model_dir, 'summaries')
-    summary_callback = tf.keras.callbacks.TensorBoard(summary_dir)
-    checkpoint_path = os.path.join(self.model_dir, 'checkpoint')
-    checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
-        checkpoint_path, save_weights_only=True)
-
     bert_model.fit(
         x=training_dataset,
         validation_data=evaluation_dataset,
         steps_per_epoch=steps_per_epoch,
         epochs=epochs,
         validation_steps=validation_steps,
-        callbacks=[summary_callback, checkpoint_callback])
+        **kwargs)
 
     return bert_model
 
@@ -755,6 +671,7 @@ class BertQAModelSpec(BertModelSpec):
       tflite_input_name=None,
       tflite_output_name=None,
       init_from_squad_model=False,
+      default_batch_size=16,
       name='Bert'):
     """Initialze an instance with model paramaters.
 
@@ -789,6 +706,7 @@ class BertQAModelSpec(BertModelSpec):
       tflite_output_name: Dict, output names for the TFLite model.
       init_from_squad_model: boolean, whether to initialize from the model that
         is already retrained on Squad 1.1.
+      default_batch_size: Default batch size for training.
       name: Name of the object.
     """
     super(BertQAModelSpec,
@@ -796,7 +714,7 @@ class BertQAModelSpec(BertModelSpec):
                          initializer_range, learning_rate,
                          distribution_strategy, num_gpus, tpu, trainable,
                          do_lower_case, is_tf2, convert_from_saved_model_tf2,
-                         name, tflite_input_name)
+                         name, tflite_input_name, default_batch_size)
     self.query_len = query_len
     self.doc_stride = doc_stride
     self.predict_batch_size = predict_batch_size
@@ -878,7 +796,7 @@ class BertQAModelSpec(BertModelSpec):
           is_tf2=self.is_tf2)
       return qa_model
 
-  def train(self, train_input_fn, epochs, steps_per_epoch):
+  def train(self, train_input_fn, epochs, steps_per_epoch, **kwargs):
     """Run bert QA training."""
     warmup_steps = int(epochs * steps_per_epoch * 0.1)
 
@@ -898,12 +816,6 @@ class BertQAModelSpec(BertModelSpec):
       bert_model.compile(
           optimizer=optimizer, loss=_loss_fn, loss_weights=[0.5, 0.5])
 
-    summary_dir = os.path.join(self.model_dir, 'summaries')
-    summary_callback = tf.keras.callbacks.TensorBoard(summary_dir)
-    checkpoint_path = os.path.join(self.model_dir, 'checkpoint')
-    checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
-        checkpoint_path, save_weights_only=True)
-
     if not bert_model.trainable_variables:
       tf.compat.v1.logging.warning(
           'Trainable variables in the model are empty.')
@@ -913,7 +825,7 @@ class BertQAModelSpec(BertModelSpec):
         x=training_dataset,
         steps_per_epoch=steps_per_epoch,
         epochs=epochs,
-        callbacks=[summary_callback, checkpoint_callback])
+        **kwargs)
 
     return bert_model
 
@@ -1067,75 +979,68 @@ _MOBILEBERT_TFLITE_OUTPUT_NAME = {
     'end_logits': 'StatefulPartitionedCall:0'
 }
 
-mobilebert_classifier_spec = BertClassifierModelSpec(
-    uri='https://tfhub.dev/google/mobilebert/uncased_L-24_H-128_B-512_A-4_F-4_OPT/1',
-    is_tf2=False,
-    distribution_strategy='off',
-    convert_from_saved_model_tf2=True,
-    name='MobileBert',
-    tflite_input_name=_MOBILEBERT_TFLITE_INPUT_NAME)
-mobilebert_classifier_spec.default_batch_size = 48
 
-mobilebert_qa_spec = BertQAModelSpec(
-    uri='https://tfhub.dev/google/mobilebert/uncased_L-24_H-128_B-512_A-4_F-4_OPT/1',
-    is_tf2=False,
-    distribution_strategy='off',
-    convert_from_saved_model_tf2=True,
-    learning_rate=5e-05,
-    name='MobileBert',
-    tflite_input_name=_MOBILEBERT_TFLITE_INPUT_NAME,
-    tflite_output_name=_MOBILEBERT_TFLITE_OUTPUT_NAME)
-mobilebert_qa_spec.default_batch_size = 48
-
-mobilebert_qa_squad_spec = BertQAModelSpec(
-    uri='https://tfhub.dev/google/mobilebert/uncased_L-24_H-128_B-512_A-4_F-4_OPT/squadv1/1',
-    is_tf2=False,
-    distribution_strategy='off',
-    convert_from_saved_model_tf2=True,
-    learning_rate=5e-05,
-    name='MobileBert',
-    tflite_input_name=_MOBILEBERT_TFLITE_INPUT_NAME,
-    tflite_output_name=_MOBILEBERT_TFLITE_OUTPUT_NAME,
-    init_from_squad_model=True)
-mobilebert_qa_squad_spec.default_batch_size = 48
-
-# A dict for model specs to make it accessible by string key.
-MODEL_SPECS = {
-    'efficientnet_lite0': efficientnet_lite0_spec,
-    'efficientnet_lite1': efficientnet_lite1_spec,
-    'efficientnet_lite2': efficientnet_lite2_spec,
-    'efficientnet_lite3': efficientnet_lite3_spec,
-    'efficientnet_lite4': efficientnet_lite4_spec,
-    'mobilenet_v2': mobilenet_v2_spec,
-    'resnet_50': resnet_50_spec,
-    'average_word_vec': AverageWordVecModelSpec,
-    'bert': BertModelSpec,
-    'bert_classifier': BertClassifierModelSpec,
-    'bert_qa': BertQAModelSpec,
-    'mobilebert_classifier': mobilebert_classifier_spec,
-    'mobilebert_qa': mobilebert_qa_spec,
-    'mobilebert_qa_squad': mobilebert_qa_squad_spec,
-}
-
-# List constants for supported models.
-IMAGE_CLASSIFICATION_MODELS = [
-    'efficientnet_lite0', 'efficientnet_lite1', 'efficientnet_lite2',
-    'efficientnet_lite3', 'efficientnet_lite4', 'mobilenet_v2', 'resnet_50'
-]
-TEXT_CLASSIFICATION_MODELS = [
-    'bert_classifier', 'average_word_vec', 'mobilebert_classifier'
-]
-QUESTION_ANSWERING_MODELS = ['bert_qa', 'mobilebert_qa', 'mobilebert_qa_squad']
+def average_word_vec_spec(**kwargs):
+  return AverageWordVecModelSpec(**kwargs)
 
 
-def get(spec_or_str):
-  """Gets model spec by name or instance, and initializes by default."""
-  if isinstance(spec_or_str, str):
-    model_spec = MODEL_SPECS[spec_or_str]
-  else:
-    model_spec = spec_or_str
+def bert_spec(**kwargs):
+  return BertModelSpec(**kwargs)
 
-  if inspect.isclass(model_spec):
-    return model_spec()
-  else:
-    return model_spec
+
+def bert_classifier_spec(**kwargs):
+  return BertClassifierModelSpec(**kwargs)
+
+
+def bert_qa_spec(**kwargs):
+  return BertQAModelSpec(**kwargs)
+
+
+def mobilebert_classifier_spec(**kwargs):
+  """Model specification for MobileBERT in the text classification task."""
+  args = util.dict_with_default(
+      default_dict=dict(
+          uri='https://tfhub.dev/google/mobilebert/uncased_L-24_H-128_B-512_A-4_F-4_OPT/1',
+          is_tf2=False,
+          distribution_strategy='off',
+          convert_from_saved_model_tf2=True,
+          name='MobileBert',
+          tflite_input_name=_MOBILEBERT_TFLITE_INPUT_NAME,
+          default_batch_size=48),
+      **kwargs)
+  return BertClassifierModelSpec(**args)
+
+
+def mobilebert_qa_spec(**kwargs):
+  """Model specification for MobileBERT in the  question answer task."""
+  args = util.dict_with_default(
+      default_dict=dict(
+          uri='https://tfhub.dev/google/mobilebert/uncased_L-24_H-128_B-512_A-4_F-4_OPT/1',
+          is_tf2=False,
+          distribution_strategy='off',
+          convert_from_saved_model_tf2=True,
+          learning_rate=4e-05,
+          name='MobileBert',
+          tflite_input_name=_MOBILEBERT_TFLITE_INPUT_NAME,
+          tflite_output_name=_MOBILEBERT_TFLITE_OUTPUT_NAME,
+          default_batch_size=32),
+      **kwargs)
+  return BertQAModelSpec(**args)
+
+
+def mobilebert_qa_squad_spec(**kwargs):
+  """Model specification for MobileBERT that already retrained on SQuAD1.1."""
+  args = util.dict_with_default(
+      default_dict=dict(
+          uri='https://tfhub.dev/google/mobilebert/uncased_L-24_H-128_B-512_A-4_F-4_OPT/squadv1/1',
+          is_tf2=False,
+          distribution_strategy='off',
+          convert_from_saved_model_tf2=True,
+          learning_rate=4e-05,
+          name='MobileBert',
+          tflite_input_name=_MOBILEBERT_TFLITE_INPUT_NAME,
+          tflite_output_name=_MOBILEBERT_TFLITE_OUTPUT_NAME,
+          init_from_squad_model=True,
+          default_batch_size=32),
+      **kwargs)
+  return BertQAModelSpec(**args)

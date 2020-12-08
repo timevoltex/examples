@@ -249,17 +249,17 @@ class TextClassifierDataLoaderTest(tf.test.TestCase):
 
   def test_split(self):
     ds = tf.data.Dataset.from_tensor_slices([[0, 1], [1, 1], [0, 0], [1, 0]])
-    data = text_dataloader.TextClassifierDataLoader(ds, 4, 2, ['pos', 'neg'])
+    data = text_dataloader.TextClassifierDataLoader(ds, 4, ['pos', 'neg'])
     train_data, test_data = data.split(0.5)
 
-    self.assertEqual(train_data.size, 2)
-    for i, elem in enumerate(train_data.dataset):
+    self.assertEqual(len(train_data), 2)
+    for i, elem in enumerate(train_data.gen_dataset()):
       self.assertTrue((elem.numpy() == np.array([i, 1])).all())
     self.assertEqual(train_data.num_classes, 2)
     self.assertEqual(train_data.index_to_label, ['pos', 'neg'])
 
-    self.assertEqual(test_data.size, 2)
-    for i, elem in enumerate(test_data.dataset):
+    self.assertEqual(len(test_data), 2)
+    for i, elem in enumerate(test_data.gen_dataset()):
       self.assertTrue((elem.numpy() == np.array([i, 0])).all())
     self.assertEqual(test_data.num_classes, 2)
     self.assertEqual(test_data.index_to_label, ['pos', 'neg'])
@@ -282,10 +282,10 @@ class TextClassifierDataLoaderTest(tf.test.TestCase):
     self._test_data(data, model_spec)
 
   def _test_data(self, data, model_spec):
-    self.assertEqual(data.size, 2)
+    self.assertEqual(len(data), 2)
     self.assertEqual(data.num_classes, 2)
     self.assertEqual(data.index_to_label, ['neg', 'pos'])
-    for input_ids, label in data.dataset:
+    for input_ids, label in data.gen_dataset():
       self.assertTrue(label.numpy() == 1 or label.numpy() == 0)
       actual_input_ids = [label.numpy()] * model_spec.seq_len
       self.assertTrue((input_ids.numpy() == actual_input_ids).all())
@@ -312,7 +312,7 @@ class QuestionAnswerDataLoaderTest(tf.test.TestCase, parameterized.TestCase):
         version_2_with_negative=version_2_with_negative)
 
     self.assertIsInstance(data, text_dataloader.QuestionAnswerDataLoader)
-    self.assertEqual(data.size, size)
+    self.assertLen(data, size)
     self.assertEqual(data.version_2_with_negative, version_2_with_negative)
     self.assertEqual(data.squad_file, squad_path)
 

@@ -25,7 +25,6 @@ import tensorflow.compat.v2 as tf
 from tensorflow_examples.lite.model_maker.core.task import metadata_writer_for_image_classifier as metadata_writer
 
 from tensorflow_examples.lite.model_maker.core import compat
-from tensorflow_examples.lite.model_maker.core.export_format import ExportFormat
 from tensorflow_examples.lite.model_maker.core.task import classification_model
 from tensorflow_examples.lite.model_maker.core.task import hub_loader
 from tensorflow_examples.lite.model_maker.core.task import image_preprocessing
@@ -44,7 +43,7 @@ def get_hub_lib_hparams(**kwargs):
 
 
 def create(train_data,
-           model_spec=ms.efficientnet_lite0_spec,
+           model_spec='efficientnet_lite0',
            validation_data=None,
            batch_size=None,
            epochs=None,
@@ -90,6 +89,7 @@ def create(train_data,
   Returns:
     An instance of ImageClassifier class.
   """
+  model_spec = ms.get(model_spec)
   if compat.get_tf_behavior() not in model_spec.compat_tf_versions:
     raise ValueError('Incompatible versions. Expect {}, but got {}.'.format(
         model_spec.compat_tf_versions, compat.get_tf_behavior()))
@@ -115,7 +115,6 @@ def create(train_data,
   image_classifier = ImageClassifier(
       model_spec,
       train_data.index_to_label,
-      train_data.num_classes,
       shuffle=shuffle,
       hparams=hparams,
       use_augmentation=use_augmentation)
@@ -167,14 +166,9 @@ def _get_model_info(model_spec,
 class ImageClassifier(classification_model.ClassificationModel):
   """ImageClassifier class for inference and exporting to tflite."""
 
-  DEFAULT_EXPORT_FORMAT = (ExportFormat.TFLITE, ExportFormat.LABEL)
-  ALLOWED_EXPORT_FORMAT = (ExportFormat.TFLITE, ExportFormat.LABEL,
-                           ExportFormat.SAVED_MODEL)
-
   def __init__(self,
                model_spec,
                index_to_label,
-               num_classes,
                shuffle=True,
                hparams=hub_lib.get_default_hparams(),
                use_augmentation=False):
@@ -183,7 +177,6 @@ class ImageClassifier(classification_model.ClassificationModel):
     Args:
       model_spec: Specification for the model.
       index_to_label: A list that map from index to label class name.
-      num_classes: Number of label classes.
       shuffle: Whether the data should be shuffled.
       hparams: A namedtuple of hyperparameters. This function expects
         .dropout_rate: The fraction of the input units to drop, used in dropout
@@ -192,11 +185,11 @@ class ImageClassifier(classification_model.ClassificationModel):
           classification layer on top.
       use_augmentation: Use data augmentation for preprocessing.
     """
-    super(ImageClassifier,
-          self).__init__(model_spec, index_to_label, num_classes, shuffle,
-                         hparams.do_fine_tuning)
-    self.hparams = hparams
-    self.preprocessor = image_preprocessing.Preprocessor(
+    super(ImageClassifier, self).__init__(model_spec, index_to_label, shuffle,
+                                          hparams.do_fine_tuning)
+    num_classes = len(index_to_label)
+    self._hparams = hparams
+    self.preprocess = image_preprocessing.Preprocessor(
         self.model_spec.input_image_shape,
         num_classes,
         self.model_spec.mean_rgb,
@@ -238,22 +231,25 @@ class ImageClassifier(classification_model.ClassificationModel):
     self.create_model()
     hparams = self._get_hparams_or_default(hparams)
 
-    if train_data.size < hparams.batch_size:
+    if len(train_data) < hparams.batch_size:
       raise ValueError('The size of the train_data (%d) couldn\'t be smaller '
                        'than batch_size (%d). To solve this problem, set '
                        'the batch_size smaller or increase the size of the '
-                       'train_data.' % (train_data.size, hparams.batch_size))
+                       'train_data.' % (len(train_data), hparams.batch_size))
 
-    train_ds = self._gen_dataset(
-        train_data, hparams.batch_size, is_training=True)
-    train_data_and_size = (train_ds, train_data.size)
+    train_ds = train_data.gen_dataset(
+        hparams.batch_size,
+        is_training=True,
+        shuffle=self.shuffle,
+        preprocess=self.preprocess)
+    train_data_and_size = (train_ds, len(train_data))
 
     validation_ds = None
     validation_size = 0
     if validation_data is not None:
-      validation_ds = self._gen_dataset(
-          validation_data, hparams.batch_size, is_training=False)
-      validation_size = validation_data.size
+      validation_ds = validation_data.gen_dataset(
+          hparams.batch_size, is_training=False, preprocess=self.preprocess)
+      validation_size = len(validation_data)
     validation_data_and_size = (validation_ds, validation_size)
 
     # Trains the models.
@@ -263,53 +259,6 @@ class ImageClassifier(classification_model.ClassificationModel):
     self.history = lib.train_model(self.model, hparams, train_data_and_size,
                                    validation_data_and_size)
     return self.history
-
-  def preprocess(self, image, label, is_training=False):
-    return self.preprocessor(image, label, is_training)
-
-  def _gen_dataset(self, data, batch_size=32, is_training=True):
-    """Generates training / validation dataset."""
-    ds = data.dataset
-    ds = ds.map(lambda image, label: self.preprocess(image, label, is_training))
-
-    if is_training:
-      if self.shuffle:
-        ds = ds.shuffle(buffer_size=min(data.size, 100))
-      ds = ds.repeat()
-
-    ds = ds.batch(batch_size)
-    ds = ds.prefetch(tf.data.experimental.AUTOTUNE)
-    return ds
-
-  def export(self,
-             export_dir,
-             tflite_filename='model.tflite',
-             label_filename='labels.txt',
-             saved_model_filename='saved_model',
-             export_format=None,
-             **kwargs):
-    """Converts the retrained model based on `model_export_format`.
-
-    Args:
-      export_dir: The directory to save exported files.
-      tflite_filename: File name to save tflite model. The full export path is
-        {export_dir}/{tflite_filename}.
-      label_filename: File name to save labels. The full export path is
-        {export_dir}/{label_filename}.
-      saved_model_filename: Path to SavedModel or H5 file to save the model. The
-        full export path is
-        {export_dir}/{saved_model_filename}/{saved_model.pb|assets|variables}.
-      export_format: List of export format that could be saved_model, tflite,
-        label.
-      **kwargs: Other parameters like `quantized` for TFLITE model.
-    """
-    super(ImageClassifier, self).export(
-        export_dir,
-        tflite_filename=tflite_filename,
-        label_filename=label_filename,
-        saved_model_filename=saved_model_filename,
-        export_format=export_format,
-        **kwargs)
 
   def _export_tflite(self,
                      tflite_filepath,
@@ -326,8 +275,11 @@ class ImageClassifier(classification_model.ClassificationModel):
         True, export the metadata in the same directory as tflite model.Used
         only if `with_metadata` is True.
     """
-    model_util.export_tflite(self.model, tflite_filepath, quantization_config,
-                             self._gen_dataset)
+    model_util.export_tflite(
+        self.model,
+        tflite_filepath,
+        quantization_config,
+        preprocess=self.preprocess)
     if with_metadata:
       with tempfile.TemporaryDirectory() as temp_dir:
         tf.compat.v1.logging.info(
@@ -356,4 +308,4 @@ class ImageClassifier(classification_model.ClassificationModel):
 
   def _get_hparams_or_default(self, hparams):
     """Returns hparams if not none, otherwise uses default one."""
-    return hparams if hparams else self.hparams
+    return hparams if hparams else self._hparams

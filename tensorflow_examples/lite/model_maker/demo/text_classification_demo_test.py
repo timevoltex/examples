@@ -40,9 +40,10 @@ def patch_data_loader():
   def side_effect(*args, **kwargs):
     tf.compat.v1.logging.info('Train on partial dataset')
     data_loader = from_csv_fn(*args, **kwargs)
-    if data_loader.size > 2:  # Trim dataset to at most 2.
-      data_loader.size = 2
-      data_loader.dataset = data_loader.dataset.take(data_loader.size)
+    if len(data_loader) > 2:  # Trim dataset to at most 2.
+      data_loader._size = 2
+      # TODO(b/171449557): Change this once dataset is lazily loaded.
+      data_loader._dataset = data_loader._dataset.take(2)
     return data_loader
 
   return patch.object(
@@ -75,4 +76,6 @@ class TextClassificationDemoTest(tf.test.TestCase):
 
 
 if __name__ == '__main__':
+  # Load compressed models from tensorflow_hub
+  os.environ['TFHUB_MODEL_LOAD_FORMAT'] = 'COMPRESSED'
   tf.test.main()

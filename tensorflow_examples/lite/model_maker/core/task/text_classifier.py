@@ -32,7 +32,7 @@ from tensorflow_examples.lite.model_maker.core.task.metadata_writers.text_classi
 
 
 def create(train_data,
-           model_spec=ms.AverageWordVecModelSpec(),
+           model_spec='average_word_vec',
            validation_data=None,
            batch_size=None,
            epochs=3,
@@ -52,6 +52,7 @@ def create(train_data,
   Returns:
     TextClassifier
   """
+  model_spec = ms.get(model_spec)
   if compat.get_tf_behavior() not in model_spec.compat_tf_versions:
     raise ValueError('Incompatible versions. Expect {}, but got {}.'.format(
         model_spec.compat_tf_versions, compat.get_tf_behavior()))
@@ -59,7 +60,6 @@ def create(train_data,
   text_classifier = TextClassifier(
       model_spec,
       train_data.index_to_label,
-      train_data.num_classes,
       shuffle=shuffle)
 
   if do_train:
@@ -98,25 +98,23 @@ class TextClassifier(classification_model.ClassificationModel):
   DEFAULT_EXPORT_FORMAT = (ExportFormat.TFLITE, ExportFormat.LABEL,
                            ExportFormat.VOCAB)
   ALLOWED_EXPORT_FORMAT = (ExportFormat.TFLITE, ExportFormat.LABEL,
-                           ExportFormat.VOCAB, ExportFormat.SAVED_MODEL)
+                           ExportFormat.VOCAB, ExportFormat.SAVED_MODEL,
+                           ExportFormat.TFJS)
 
   def __init__(self,
                model_spec,
                index_to_label,
-               num_classes,
                shuffle=True):
     """Init function for TextClassifier class.
 
     Args:
       model_spec: Specification for the model.
       index_to_label: A list that map from index to label class name.
-      num_classes: Number of label classes.
       shuffle: Whether the data should be shuffled.
     """
     super(TextClassifier, self).__init__(
         model_spec,
         index_to_label,
-        num_classes,
         shuffle,
         train_whole_model=True)
 
@@ -132,22 +130,25 @@ class TextClassifier(classification_model.ClassificationModel):
     if batch_size is None:
       batch_size = self.model_spec.default_batch_size
 
-    if train_data.size < batch_size:
+    if len(train_data) < batch_size:
       raise ValueError('The size of the train_data (%d) couldn\'t be smaller '
                        'than batch_size (%d). To solve this problem, set '
                        'the batch_size smaller or increase the size of the '
-                       'train_data.' % (train_data.size, batch_size))
+                       'train_data.' % (len(train_data), batch_size))
 
     train_input_fn, steps_per_epoch = self._get_input_fn_and_steps(
         train_data, batch_size, is_training=True)
     validation_input_fn, validation_steps = self._get_input_fn_and_steps(
         validation_data, batch_size, is_training=False)
 
-    self.model = self.model_spec.run_classifier(train_input_fn,
-                                                validation_input_fn, epochs,
-                                                steps_per_epoch,
-                                                validation_steps,
-                                                self.num_classes)
+    self.model = self.model_spec.run_classifier(
+        train_input_fn,
+        validation_input_fn,
+        epochs,
+        steps_per_epoch,
+        validation_steps,
+        self.num_classes,
+        callbacks=self._keras_callbacks(model_dir=self.model_spec.model_dir))
 
     return self.model
 
@@ -166,7 +167,6 @@ class TextClassifier(classification_model.ClassificationModel):
     # Sets batch size from None to 1 when converting to tflite.
     model_util.set_batch_size(self.model, batch_size=1)
     model_util.export_tflite(self.model, tflite_filepath, quantization_config,
-                             self._gen_dataset,
                              self.model_spec.convert_from_saved_model_tf2)
     # Sets batch size back to None to support retraining later.
     model_util.set_batch_size(self.model, batch_size=None)

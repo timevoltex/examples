@@ -36,6 +36,18 @@ android {
     lintOptions {
       abortOnError false
     }
+
+    flavorDimensions "tfliteInference"
+    productFlavors {
+       // The TFLite inference is built using the TFLite Java API.
+       interpreter {
+           dimension "tfliteInference"
+       }
+       // The TFLite inference is built using the TFLite Task library.
+       taskApi {
+           dimension "tfliteInference"
+       }
+   }
 }
 
 // App assets folder:
@@ -46,11 +58,13 @@ apply from: 'download.gradle'
 
 dependencies {
     implementation fileTree(dir: 'libs', include: ['*.jar'])
+    interpreterImplementation project(":lib_interpreter")
+    taskApiImplementation project(":lib_task_api")
+    implementation project(":lib_utils")
 
     implementation 'androidx.appcompat:appcompat:1.1.0'
     implementation 'androidx.constraintlayout:constraintlayout:1.1.3'
     implementation 'androidx.coordinatorlayout:coordinatorlayout:1.1.0'
-    implementation 'androidx.exifinterface:exifinterface:1.2.0'
     implementation 'androidx.legacy:legacy-support-v4:1.0.0'
     implementation 'androidx.lifecycle:lifecycle-extensions:2.2.0'
     implementation 'androidx.lifecycle:lifecycle-viewmodel:2.2.0'
@@ -62,6 +76,4 @@ dependencies {
     implementation 'org.jetbrains.kotlin:kotlin-stdlib:1.3.71'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.3.0'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-core:1.3.0'
-    implementation('org.tensorflow:tensorflow-lite:0.0.0-nightly') { changing = true }
-    implementation('org.tensorflow:tensorflow-lite-gpu:0.0.0-nightly') { changing = true }
 }

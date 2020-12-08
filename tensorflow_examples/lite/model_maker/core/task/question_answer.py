@@ -25,6 +25,7 @@ import tensorflow as tf
 from tensorflow_examples.lite.model_maker.core import compat
 from tensorflow_examples.lite.model_maker.core.export_format import ExportFormat
 from tensorflow_examples.lite.model_maker.core.task import custom_model
+from tensorflow_examples.lite.model_maker.core.task import model_spec as ms
 from tensorflow_examples.lite.model_maker.core.task import model_util
 from tensorflow_examples.lite.model_maker.core.task.metadata_writers.bert.question_answerer import metadata_writer_for_bert_question_answerer as metadata_writer
 
@@ -48,6 +49,7 @@ def create(train_data,
   Returns:
     object of QuestionAnswer class.
   """
+  model_spec = ms.get(model_spec)
   if compat.get_tf_behavior() not in model_spec.compat_tf_versions:
     raise ValueError('Incompatible versions. Expect {}, but got {}.'.format(
         model_spec.compat_tf_versions, compat.get_tf_behavior()))
@@ -87,22 +89,16 @@ class QuestionAnswer(custom_model.CustomModel):
   ALLOWED_EXPORT_FORMAT = (ExportFormat.TFLITE, ExportFormat.VOCAB,
                            ExportFormat.SAVED_MODEL)
 
-  def preprocess(self, raw_text, label):
-    """Preprocess the text."""
-    # TODO(yuqili): remove this method once preprocess for image classifier is
-    # also moved to DataLoader part.
-    return raw_text, label
-
   def train(self, train_data, epochs=None, batch_size=None):
     """Feeds the training data for training."""
     if batch_size is None:
       batch_size = self.model_spec.default_batch_size
 
-    if train_data.size < batch_size:
+    if len(train_data) < batch_size:
       raise ValueError('The size of the train_data (%d) couldn\'t be smaller '
                        'than batch_size (%d). To solve this problem, set '
                        'the batch_size smaller or increase the size of the '
-                       'train_data.' % (train_data.size, batch_size))
+                       'train_data.' % (len(train_data), batch_size))
 
     train_input_fn, steps_per_epoch = self._get_input_fn_and_steps(
         train_data, batch_size, is_training=True)
@@ -141,7 +137,7 @@ class QuestionAnswer(custom_model.CustomModel):
     """
     predict_batch_size = self.model_spec.predict_batch_size
     input_fn = self._get_dataset_fn(data, predict_batch_size, is_training=False)
-    num_steps = int(data.size / predict_batch_size)
+    num_steps = int(len(data) / predict_batch_size)
     return self.model_spec.evaluate(
         self.model, None, input_fn, num_steps, data.examples, data.features,
         data.squad_file, data.version_2_with_negative, max_answer_length,
@@ -177,40 +173,10 @@ class QuestionAnswer(custom_model.CustomModel):
     input_fn = self._get_dataset_fn(
         data, global_batch_size=1, is_training=False)
     return self.model_spec.evaluate(
-        None, tflite_filepath, input_fn, data.size, data.examples,
+        None, tflite_filepath, input_fn, len(data), data.examples,
         data.features, data.squad_file, data.version_2_with_negative,
         max_answer_length, null_score_diff_threshold, verbose_logging,
         output_dir)
-
-  def export(self,
-             export_dir,
-             tflite_filename='model.tflite',
-             vocab_filename='vocab',
-             saved_model_filename='saved_model',
-             export_format=None,
-             **kwargs):
-    """Converts the retrained model based on `export_format`.
-
-    Args:
-      export_dir: The directory to save exported files.
-      tflite_filename: File name to save tflite model. The full export path is
-        {export_dir}/{tflite_filename}.
-      vocab_filename: File name to save vocabulary.  The full export path is
-        {export_dir}/{vocab_filename}.
-      saved_model_filename: Path to SavedModel or H5 file to save the model. The
-        full export path is
-        {export_dir}/{saved_model_filename}/{saved_model.pb|assets|variables}.
-      export_format: List of export format that could be saved_model, tflite,
-        label, vocab.
-      **kwargs: Other parameters like `quantized` for TFLITE model.
-    """
-    super(QuestionAnswer, self).export(
-        export_dir,
-        tflite_filename=tflite_filename,
-        vocab_filename=vocab_filename,
-        saved_model_filename=saved_model_filename,
-        export_format=export_format,
-        **kwargs)
 
   def _export_tflite(self,
                      tflite_filepath,
@@ -227,7 +193,6 @@ class QuestionAnswer(custom_model.CustomModel):
     # Sets batch size from None to 1 when converting to tflite.
     model_util.set_batch_size(self.model, batch_size=1)
     model_util.export_tflite(self.model, tflite_filepath, quantization_config,
-                             self._gen_dataset,
                              self.model_spec.convert_from_saved_model_tf2)
     # Sets batch size back to None to support retraining later.
     model_util.set_batch_size(self.model, batch_size=None)

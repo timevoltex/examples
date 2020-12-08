@@ -36,22 +36,6 @@ def _gen_examples():
   return examples
 
 
-class ModelSpecTest(tf.test.TestCase):
-
-  def test_get(self):
-    spec = ms.get('mobilenet_v2')
-    self.assertIsInstance(spec, ms.ImageModelSpec)
-
-    spec = ms.get('average_word_vec')
-    self.assertIsInstance(spec, ms.AverageWordVecModelSpec)
-
-    spec = ms.get(ms.mobilenet_v2_spec)
-    self.assertEqual(spec, ms.mobilenet_v2_spec)
-
-    with self.assertRaises(KeyError):
-      ms.get('not_exist_model_spec')
-
-
 def _get_dataset_from_tfrecord(tfrecord_file, name_to_features):
 
   def _parse_function(example_proto):
@@ -235,4 +219,6 @@ class BertClassifierModelSpecTest(tf.test.TestCase, parameterized.TestCase):
 
 
 if __name__ == '__main__':
+  # Load compressed models from tensorflow_hub
+  os.environ['TFHUB_MODEL_LOAD_FORMAT'] = 'COMPRESSED'
   tf.test.main()
